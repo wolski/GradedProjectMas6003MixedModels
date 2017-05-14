@@ -1,0 +1,405 @@
+---
+title: "Graded Project MAS6003"
+author: "Witold Wolski"
+date: "March 25, 2017"
+output:
+  pdf_document: 
+    fig_caption: yes
+    fig_height: 5
+    fig_width: 5
+    toc: yes
+  html_document: default
+---
+
+```{r loadpackage, setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(ggplot2)
+library(lme4)
+library(reshape2)
+
+```
+
+
+It may be assumed that seeds from which the trees in the data-set grew were selected randomly
+from a seed bank and that the trees grew independently of each other.
+
+
+## Task 1 - Identify model 
+
+Use the data to identify a suitable growth model for Olly Bolly Dob Dob plants aged between
+3 and 25 weeks.
+
+
+```{r include=FALSE}
+
+rm(list=ls())
+source("multiplot.R")
+
+load('OllyBolly.rda', envir = EnvOlly <- new.env())
+OllyBolly <- EnvOlly$OllyBolly
+rm(EnvOlly)
+
+```
+
+We examine the data by making a line plots of height versurs age for all Olly Bolly trees.
+By inspecting the plot we can see that the growth slows down with age. Furthermore, the growth between the age of $5-10$ is fastest.
+
+```{r firstplot}
+g1 <- ggplot(OllyBolly, aes(x = age , y=height)) + geom_line(aes(colour=Seed))+ theme(legend.position="none")
+
+```
+
+Therefore, in the next plot I did examine if plotting the height versus the square root of the age improves makes the slope constant. 
+
+```{r secondplot}
+g2 <- ggplot(OllyBolly, aes(x = age , y=height)) + geom_line(aes(colour=Seed)) + scale_x_sqrt()+ theme(legend.position="none")
+
+```
+
+To represent $\sqrt(age)$ I introduced a new column `sqrtAge` in the OllyBolly dataframe.
+
+```{r}
+OllyBolly$sqrtAge <- sqrt(OllyBolly$age)
+```
+
+For all ages starting with $5$ we now have almost an affine growth model $height = \alpha + \beta (\sqrt(age)$. The growth curve from 3 to 5 weeks seems however to come from a different process. Very likely the measurement at 3 weeks is unreliable.  I decided to remove the age of 3 from the dataset.
+
+
+```{r}
+OllyBolly <- subset(OllyBolly, age > 4)
+
+```
+
+
+To make sure that everyting is as expected I do:
+
+```{r, fig.width=10, fig.height=5, fig.cap="Tree height versus age (left) square root of age (center) and square root of age and timepoint 3 weeks removed."}
+
+g3<- ggplot(OllyBolly, aes(x = sqrtAge , y=height)) + geom_line(aes(colour=Seed))+ theme(legend.position="none")
+multiplot(g1,g2,g3,cols=3)
+```
+
+\pagebreak
+
+## Examining models for individutal seeds
+
+
+In order to better understand the data and to learn if a mixed model is required I examine how much models for a single seed vary. To this task i do compute a model for each seed and extract the coefficients as well as the standard deviation of the coefficients.
+
+The model for a single tree is given by:
+$$
+height_i = \alpha + \beta \sqrt{age} + \gamma age
+$$
+
+I did included intercept, $\sqrt{age}$ and $age$ since, after performing model diagnostics especially the residues for each seed there still was a higher order component (see section "Checking model assumptions"). 
+
+```{r fig.cap="Individual seed growth models."}
+library(plyr)
+
+res <- plyr::dlply(OllyBolly, .(Seed), function(x){((lm(height ~ sqrtAge + age, x)))})
+desmat <- model.matrix(res[[1]])
+res <- plyr::llply(res, summary)
+res <- plyr::llply(res, coef)
+estimate <- ldply(res, function(x){x[,"Estimate"]})
+sd <- ldply(res, function(x){x[,"Std. Error"]})
+
+desmat <- cbind(rep(1,20),sqrt(seq(0,25, length.out = 20)),seq(0,25, length.out = 20))
+plot(desmat[,3] , desmat %*% t(as.matrix(estimate[1,2:4])), type="l", ylab="height",xlab="age",ylim=c(-2,4))
+for(i in 1:nrow(estimate)){
+  lines(desmat[,3] , desmat %*% t(as.matrix(estimate[i,2:4])), type="l")
+}
+
+
+```
+
+Although the differences between the models are small they might be significant. To check this I examine the standard deviation of the parameters and compare them with the range of the parameters for all seeds.
+
+The standard deviation of the intercept is on average:
+
+```{r} 
+(sdI <- mean( sd$`(Intercept)`))
+```
+
+while the range by which the intercept changes is  
+
+```{r}
+(eI<-abs(diff(range( estimate$`(Intercept)` ))))
+```
+
+The range is `r eI/sdI` higher than the standard deviation.
+
+In a similar way I do examine the differences in the slope coefficients. 
+
+While the average standard deviation of the coefficient $\gamma$ is:
+
+```{r}
+(sdS <-mean(sd$age))
+```
+
+, it changes in the range
+
+```{r}
+(eS <- abs(diff(range(estimate$age))))
+```
+
+, which is `r eS/sdS` higher than the standard deviation of the slope.
+
+Finally, while the average standard deviation of the coefficient $\beta$ is:
+
+```{r}
+(sdS <-mean(sd$sqrtAge))
+```
+, it changes in the range
+
+```{r}
+(eS <- abs(diff(range(estimate$sqrtAge))))
+```
+
+, which is `r eS/sdS` higher than the standard deviation of the slope.
+
+This analysis reveals, that although the differences in the growth model between the seeds are small they are nevertheless significant. 
+
+This, as well as that we are not interested in the models for any particular seed, but in the model for the population of seeds, motivates the use of an mixed effects model. Using a mixed model helps to accomodate the differences in the growth models of speeds.
+
+Finally, I do examine, if there is a correlation between coefficients for the seeds, and hence if there is I might include them in the model.
+
+```{r fig.cap="Scatterplot of coefficients for Intercept, age and sqrtAge. They show that the coefficients are correlated and that interactions should be considered.", fig.width=9}
+labcor<- paste("cor = ",round(cor(estimate$`(Intercept)`,estimate$age),digits=2))
+
+p1 <- ggplot(estimate, aes(x = `(Intercept)`, y = age)) + geom_point() + stat_smooth(method="lm")+
+  annotate("text", x = min(estimate$`(Intercept)`) + 0.4, y = max(estimate$age) ,label= labcor)
+
+labcor<- paste("cor = ",round(cor(estimate$`(Intercept)`,estimate$sqrtAge),digits=2))
+
+p2 <- ggplot(estimate, aes(x = `(Intercept)`, y = sqrtAge)) + geom_point() +stat_smooth(method="lm") +
+  annotate("text", x = min(estimate$`(Intercept)`) + 0.4, y = min(estimate$sqrtAge),label= labcor)
+
+labcor<- paste("cor = ",round(cor(estimate$age,estimate$sqrtAge),digits=2))
+
+p3 <- ggplot(estimate, aes(x = age, y = sqrtAge)) + geom_point() +stat_smooth(method="lm") +
+  annotate("text", x = min(estimate$age) + 0.05, y = min(estimate$sqrtAge), label= labcor)
+multiplot(p1,p2,p3, cols=3)
+```
+
+The plot in the middle shows for instance that if a seed has a higher intercept we can expect a lower slope.
+
+
+## Choosing the mixed effects model.
+
+Since the previous analysis revealed that differences between the seeds are significant I decided to use a mixed effects model. Futhermore, since interactions between the variables do also seem to be significant I will compare two models:
+
+- Different intercept and slope but uncorelated random effect
+
+```{r}
+lme2 <- lmer(height ~ 1 + sqrtAge + age + (1|Seed) + (sqrtAge-1|Seed) + (age-1|Seed) ,
+             data=OllyBolly, REML = F)
+
+```
+
+- Different intercept and slope and corelated random effect
+
+```{r}
+lme3 <- lmer(height ~ sqrtAge + age +(1 + age + sqrtAge|Seed),
+             data=OllyBolly, REML = F)
+
+```
+
+Comparing the models, should be done with the maximum likelihood estimate. Since the `anova` methods
+reruns the model fitting with the maximum likelihood method, I do not pass `REML=FALSE` objects explicitely.
+
+```{r}
+anova(lme2, lme3 )
+(obs.test.stat<- - 2*(logLik(lme2)-logLik(lme3)) )
+unlist(obs.test.stat)
+1 - pchisq(obs.test.stat,1)
+
+```
+
+Since the $\chi^2$ test might overestimate the p-value I will use bootstrap to compare the two models.
+
+
+```{r, warning=FALSE}
+N<-250
+boot.test.stats<-rep(0,N)
+for(i in 1:N){
+  
+  if(i %% 100 == 0){
+    print(i)
+    }
+  new.height<-unlist(simulate(lme2))
+  
+  fm.reduced.new<-lmer(new.height ~ sqrtAge + age + (1|Seed) + (sqrtAge-1|Seed) + (age-1|Seed) ,data = OllyBolly, REML=F)
+  fm.full.new<-lmer(new.height ~ sqrtAge +age + (1 + sqrtAge +age|Seed) , data=OllyBolly ,REML=F)
+  boot.test.stats[i]<- -2*(logLik(fm.reduced.new)-logLik(fm.full.new))
+}
+```
+
+```{r fig.cap="Hisogram of simulated test statistics. The green curve represents a chisq distribution with 1 df. The red vertical line are the observed test statistic."}
+
+hist(boot.test.stats,prob=T,breaks=40, xlim= c(0, obs.test.stat+3))
+curve(dchisq(x,df=1),from=0,to=40,add=T,col=3)
+points(obs.test.stat,0,pch=4,col="red")
+abline(v=obs.test.stat, col=2, lwd=2)
+mean(boot.test.stats > obs.test.stat)
+
+```
+
+Since the obtained p-value for comparing the reduced and the more complex model is small I will now closer examine the  complex model which includes interactions.
+
+
+\pagebreak
+
+## Checking model assumptions
+
+The model, we are going to work with is:
+$$
+Y_{i,j} = \beta_0 + a_{i} +  (\beta_1 + b_{i}) x_j + (\beta_2 + c_{i}) x'_j + \epsilon_{ij}
+$$
+
+where $Y_ij$ is the height of the plant $i$ after time $j$. $\beta_0$ is the population intercept,  $\beta_1$ and $\beta_2$ describe the growth curve, 
+
+$$
+\begin{pmatrix}
+a_i\\ b_i\\ c_i
+\end{pmatrix} \sim N(0, \Sigma)
+$$
+are the fixed effects with $\Sigma$ the covariance matrix, and $\epsilon \sim N(0,\sigma^2)$.
+
+
+```{r}
+lme3 <- lmer(height ~ 1+sqrtAge + age  +(1 + age + sqrtAge|Seed), data=OllyBolly, REML = T)
+lmeChosen <- lme3
+summary(lmeChosen)
+
+```
+
+Extract variances of random effects an make qqplots:
+
+```{r fig.cap = "qqnorm plots for the fixed effects to examine if they are normally distributed", fig.width=8}
+raneffVar <- VarCorr(lmeChosen)
+stdevs <-attributes(((raneffVar))$Seed)$stddev
+par(mfrow=c(1,3))
+
+randomEffects <- ranef(lmeChosen)[[1]]
+qqnorm(randomEffects[,1],main=names(randomEffects)[1])
+abline(c(0,stdevs[1]),col=2)
+
+qqnorm(randomEffects[,2],main=names(randomEffects)[2])
+abline(c(0,stdevs[2]),col=2)
+
+qqnorm(randomEffects[,3],main=names(randomEffects)[3])
+abline(c(0,stdevs[3]),col=2)
+
+``` 
+
+Furthermore we:
+
+- Compare fitted versus residuals for each seed
+- To check the assumption that the errors $\epsilon$ are randomly distributed we use a qqplot.
+- Plot level 0 fitted values against residuals
+- Assess general fit of model
+
+
+```{r , fig.cap = "Residuals versus fitted values vor each seed."}
+qplot(fitted(lmeChosen), resid(lmeChosen), facets = ~Seed, data=OllyBolly)
+qplot(fitted(lmeChosen), resid(lmeChosen),  data=OllyBolly)
+
+```
+
+
+```{r, fig.cap="Panel A - qqnorm plot of model residues. Panel B - Level 0 resdiues vs fitted. Panel C - Measured height vs fitted values", fig.width=8}
+par(mfrow=c(1,3))
+
+qqnorm(resid(lmeChosen), main="A.")
+abline(c(0,(summary(lmeChosen))$sigma),col=2)
+
+fitted.level0<-lmeChosen@pp$X %*% fixef(lmeChosen)
+resid.level0<-OllyBolly$height-fitted.level0
+plot(jitter(fitted.level0),resid.level0, main="B.")
+
+plot(fitted(lmeChosen),OllyBolly$height, main="C.")
+abline(0,1,col=2)
+```
+
+\pagebreak
+
+
+# Task 2 - Estimate height at 25 weeks
+
+
+Estimate the height at age $25$ weeks of another plant grown under similar conditions to those
+here, but from a different seed chosen randomly from the same seed bank.
+
+Using the function `simulate` we can simulate responses corresponding to the fitted model object.
+
+
+```{r, fig.cap="Histogram of the simulated heights at 25 weeks. The red dots represent the actually measured heights of the trees."}
+new.height<-simulate(lmeChosen, nsim=1000)
+new.height.25 <- new.height[OllyBolly$age==25,]
+hist(unlist(new.height.25), main="")
+
+Olb25<-subset(OllyBolly, age==25)
+points(Olb25$height, rep(1000, nrow(Olb25)), col=2, type="p")
+
+```
+
+The expected height of the plant will be `r mean(unlist(new.height.25))`.
+Furthermore we can say that in $95\%$ of cases, the height of the plant will be in the range `r quantile(unlist(new.height.25),c(0.025,0.975))`.
+
+Alternatively, we can use the fixed effect coefficients to predict the expected height of a tree at the age of 25.
+
+```{r}
+(pred25 <- fixef(lmeChosen)[1] + fixef(lmeChosen)[2] *sqrt(25) + fixef(lmeChosen)[3] * 25)
+
+```
+
+# Task 3 - Estimeate height at 25 given additional information about seed at age of 10 weeks.
+
+Furthermore, suppose that in addition, you are later told that this plant is $2.6m$ tall at $10$
+weeks of age. Provide an updated estimate of the height of this plant at age $25$ weeks.
+
+To answer the question I am going to use simulation. Again I am simulating from our model of choice.
+
+```{r}
+new.height<-simulate(lmeChosen, nsim=10000)
+```
+
+Next, I am selecting only those simulated seeds where the height at the age of 10 is very close to  $2.6$ (larger than $2.59$ and less
+$2.615$). 
+
+
+```{r}
+new.height.10 <- new.height[OllyBolly$age==10,]
+height.10_2.6 <- which(new.height.10 > 2.59 & new.height.10 < 2.615,arr.ind = T)
+```
+There are `r length(new.height.10[height.10_2.6])` such seeds and their mean is `r mean(new.height.10[height.10_2.6])`.
+
+
+Now only for those seeds I examine their height at 25.
+
+
+```{r Selecting25given10 , fig.cap="Left panel, histogram of heights at age 25 (black) and histogram of heights at age 25 for those seeds which had a height of 2.6 at the age of 10 (red). Right panel, Density plot of the same data."}
+new.height.25 <- new.height[OllyBolly$age==25,]
+height.25_height2.6At10 <- new.height.25[height.10_2.6]
+par(mfrow=c(1,2))
+hist(unlist(new.height.25))
+hist(height.25_height2.6At10, add=T , col=2)
+
+plot(density(unlist(new.height.25)), ylim=c(0,4))
+lines(density(height.25_height2.6At10),col=2)
+```
+
+The average height of the tree in metres after 25 weeks, for those trees that were $2.6$ meter high at the age of $10$ weeks is:
+
+```{r}
+mean(new.height.25[height.10_2.6])
+
+```
+
+In addition, we easily can estimate the $95\%$ confidence interval :
+
+```{r}
+quantile(new.height.25[height.10_2.6], c(0.025,0.975))
+
+```
+.
