@@ -3,12 +3,12 @@ title: "Graded Project MAS6003"
 author: "Registration number 160223367"
 date: "April 3 25, 2017"
 output:
-  pdf_document: 
+  html_document: default
+  pdf_document:
     fig_caption: yes
     fig_height: 5
     fig_width: 5
     toc: yes
-  html_document: default
 ---
 
 ```{r loadpackage, setup, include=FALSE}
